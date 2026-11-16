@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Assetto Corsa Content Manager
-Comment=Open Assetto Corsa and No Hesi acmanager links
-NoDisplay=true
-Terminal=false
-MimeType=x-scheme-handler/acmanager;
-Actions=
-Exec=sh -c "uri=\$1; cm=\$HOME/Games/assettocorsa/AssettoCorsa.exe; [ -f \"\$cm\" ] || cm=\$(find \"\$HOME/.steam\" \"\$HOME/.local/share/Steam\" -type f -iname \"Content Manager.exe\" -print -quit 2>/dev/null); [ -n \"\$cm\" ] || { printf '%%s\n' 'Content Manager.exe not found' >&2; exit 1; }; exec wine \"\$cm\" \"\$uri\"" -- %u
