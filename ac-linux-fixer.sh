@@ -7,6 +7,7 @@ readonly PROTONTRICKS_APP=com.github.Matoking.protontricks
 readonly GE_PROTON_VERSION=GE-Proton9-27
 readonly GE_PROTON_URL="https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton9-27/GE-Proton9-27.tar.gz"
 readonly LAUNCH_OPTIONS='WINEDLLOVERRIDES="dwrite=n,b" LC_ALL=C %command%'
+readonly FLATHUB_URL=https://flathub.org/repo/flathub.flatpakrepo
 
 log() { printf '[%s] %s\n' "$SCRIPT_NAME" "$*"; }
 warn() { printf '[%s] WARNING: %s\n' "$SCRIPT_NAME" "$*" >&2; }
@@ -15,6 +16,64 @@ trap 'die "failed at line $LINENO: $BASH_COMMAND"' ERR
 
 require_command() {
     command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+install_host_dependencies() {
+    local package_manager packages
+    if command -v apt-get >/dev/null 2>&1; then
+        package_manager=apt-get
+        packages=(curl findutils flatpak procps tar unzip)
+    elif command -v pacman >/dev/null 2>&1; then
+        package_manager=pacman
+        packages=(curl findutils flatpak procps-ng tar unzip)
+    elif command -v dnf >/dev/null 2>&1; then
+        package_manager=dnf
+        packages=(curl findutils flatpak procps-ng tar unzip)
+    elif command -v zypper >/dev/null 2>&1; then
+        package_manager=zypper
+        packages=(curl findutils flatpak procps tar unzip)
+    else
+        warn "No supported package manager found; install curl, find, flatpak, pkill, tar, and unzip manually."
+        return
+    fi
+
+    local missing=()
+    case "$package_manager" in
+        apt-get)
+            for package in "${packages[@]}"; do
+                dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' || missing+=("$package")
+            done
+            ;;
+        pacman)
+            for package in "${packages[@]}"; do
+                pacman -Q "$package" >/dev/null 2>&1 || missing+=("$package")
+            done
+            ;;
+        dnf)
+            for package in "${packages[@]}"; do
+                rpm -q "$package" >/dev/null 2>&1 || missing+=("$package")
+            done
+            ;;
+        zypper)
+            for package in "${packages[@]}"; do
+                rpm -q "$package" >/dev/null 2>&1 || missing+=("$package")
+            done
+            ;;
+    esac
+    if ((${#missing[@]})); then
+        log "Installing host dependencies with $package_manager: ${missing[*]}"
+        case "$package_manager" in
+            apt-get) sudo "$package_manager" update && sudo "$package_manager" install -y "${missing[@]}" ;;
+            pacman) sudo "$package_manager" -Sy --needed --noconfirm "${missing[@]}" ;;
+            dnf) sudo "$package_manager" install -y "${missing[@]}" ;;
+            zypper) sudo "$package_manager" --non-interactive install "${missing[@]}" ;;
+        esac
+    fi
+}
+
+ensure_flatpak() {
+    require_command flatpak
+    flatpak remote-add --if-not-exists flathub "$FLATHUB_URL"
 }
 
 detect_steam_dir() {
@@ -52,15 +111,17 @@ detect_library_roots() {
     [[ -d "$HOME/.steam/steam" ]] && printf '%s\n' "$HOME/.steam/steam"
     while IFS= read -r library_file; do
         awk -F'"' '/^[[:space:]]*"path"/ { print $4 }' "$library_file"
-    done < <(find /mnt -maxdepth 4 -type f -path '*/steamapps/libraryfolders.vdf' 2>/dev/null)
+    done < <(find /mnt /media "/run/media/$USER" -maxdepth 5 -type f \
+        -path '*/steamapps/libraryfolders.vdf' 2>/dev/null)
     while IFS= read -r library; do
         [[ -d "$library" ]] && printf '%s\n' "$library"
-    done < <(find /mnt -maxdepth 4 -type d -name steamapps -printf '%h\n' 2>/dev/null)
+    done < <(find /mnt /media "/run/media/$USER" -maxdepth 5 -type d -name steamapps \
+        -printf '%h\n' 2>/dev/null)
 }
 
 configure_flatpak_access() {
     local steam_dir="$1" path
-    require_command flatpak
+    ensure_flatpak
     while IFS= read -r path; do
         [[ -d "$path" ]] || continue
         flatpak override --user --filesystem="$path" "$PROTONTRICKS_APP"
@@ -69,10 +130,18 @@ configure_flatpak_access() {
 }
 
 install_protontricks() {
-    require_command flatpak
-    if command -v apt >/dev/null 2>&1 && dpkg-query -W -f='${Status}' protontricks 2>/dev/null | grep -q 'install ok installed'; then
+    ensure_flatpak
+    if command -v dpkg-query >/dev/null 2>&1 && dpkg-query -W -f='${Status}' protontricks 2>/dev/null | grep -q 'install ok installed'; then
         log "Removing repository Protontricks (known appinfo.vdf parser bug)"
-        sudo apt remove -y protontricks
+        sudo apt-get remove -y protontricks
+    elif command -v pacman >/dev/null 2>&1 && pacman -Q protontricks >/dev/null 2>&1; then
+        log "Removing repository Protontricks in favor of Flatpak"
+        sudo pacman -Rns --noconfirm protontricks
+    elif command -v rpm >/dev/null 2>&1 && rpm -q protontricks >/dev/null 2>&1; then
+        log "Removing repository Protontricks in favor of Flatpak"
+        if command -v dnf >/dev/null 2>&1; then sudo dnf remove -y protontricks
+        else sudo zypper --non-interactive remove protontricks
+        fi
     fi
     flatpak install -y flathub "$PROTONTRICKS_APP"
 }
@@ -149,7 +218,7 @@ install_content_manager_swap() {
 }
 
 main() {
-    require_command sudo
+    install_host_dependencies
     require_command find
     local steam_dir ac_dir
     steam_dir="$(detect_steam_dir)" || die "Steam installation not found"
